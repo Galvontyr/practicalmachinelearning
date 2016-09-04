@@ -1,0 +1,127 @@
+---
+title: "Practical Machine Learning: Predicting Weightlifting Class"
+author: "Glenn Padua"
+date: "September 4, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, fig.path='Figs/',
+                      echo=TRUE, warning=FALSE, message=FALSE)
+```
+
+## Preparation
+```{r, echo=FALSE}
+# Install/load packages
+packages <- c("caret", "ggplot2", "reshape2", "plyr", "randomForest", 
+              "gbm", "parallel", "doParallel")
+lapply(packages, require, character.only=TRUE)
+```
+
+# Load data
+```{r}
+test <- read.csv("pml-testing.csv")
+train <- read.csv("pml-training.csv")
+
+#create a test partition from the train set
+set.seed(2618)
+inTrain <- createDataPartition(train$classe, p=.75)[[1]]
+training <- train[inTrain,]
+testing <- train[-inTrain,]
+```
+
+# Pre-processing
+Remove NA
+```{r Pre-proc1, cache=TRUE}
+countNA <- sapply(training, function(y) sum(is.na(y)))
+noise <- c(grep(1,as.vector(countNA)))
+```
+
+Remove Columns 1:7
+```{r Pre-proc2, cache=TRUE}
+# col[1]: Unit ID - does not help predict classe
+# col[2,6:7]: makes the model too biased to the individual - model should not be biased to individuals
+# col[3:5]: Time is unrelated to the way the individuals perform since they were given specific instructions on how to perfrom each task.
+noise <- c(1:7, noise)
+```
+
+Remove Near Zero Variables - do this separately because using nzv inside train function ignores factor variables.
+```{r Pre-proc2, cache=TRUE}
+nzv <- nearZeroVar(training)
+noise <- unique(c(noise,nzv))
+```
+
+# Cross Validation
+```{r}
+# Using repeated k-fold to increase accuracy
+ctrl <- trainControl(method="repeatedcv", number=10, repeats=3, allowParallel=TRUE)
+```
+
+```{r, echo=FALSE}
+#Multi-threading setup (use optimum number of cores that my PC can handle)
+cluster <- makeCluster(detectCores() - 3) #left 3 cores for PC's sake
+registerDoParallel(cluster)
+```
+
+## Model creation
+# Random Forest w/ PCA
+```{r RF1, cache=TRUE}
+set.seed(4006)
+(modRF1 <- train(classe ~., method="rf", data=training[,-noise], trControl=ctrl, 
+              preProcess=c("center", "scale", "pca")))
+```
+
+# Random Forest no PCA
+```{r RF2, cache=TRUE}
+set.seed(4006)
+(modRF2 <- train(classe ~., method="rf", data=training[,-noise], trControl=ctrl, 
+                             preProcess=c("center", "scale")))
+```
+
+# Boosting
+```{r GBM, cache=TRUE}
+set.seed(4006)
+(modGBM <- train(classe ~., method="gbm", data=training[,-noise], trControl=ctrl, 
+                preProcess=c("center", "scale"), verbose=FALSE))
+```
+
+```{r, echo=FALSE}
+#Stop multi-threading
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+## Results
+```{r Results, cache=TRUE}
+(modSummary <- rbind(modRF1=getTrainPerf(modRF1),modRF2=getTrainPerf(modRF2),
+                     modGBM=getTrainPerf(modGBM)))
+```
+
+# Compare models
+```{r}
+scales <- list(x=list(relation="free"), y=list(relation="free"))
+bwplot(modResults, scales=scales)
+```
+
+# Use RF2 - Final Model
+```{r}
+modRF2$finalModel
+```
+
+# Plot Variable Importance
+```{r}
+modRF2Imp <- varImp(modRF2, scale=F)
+plot(modRF2Imp, top = 20)
+```
+
+## Prediction Results (testing set)
+```{r}
+predRF2 <- predict(modRF2, newdata=testing)
+postResample(predRF2, testing$classe)
+confusionMatrix(predRF2, testing$classe)
+```
+
+## Quiz: Out of Sample Prediction Results (20 test cases)
+```{r}
+(pred20 <- predict(modRF2, newdata=test))
+```

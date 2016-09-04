@@ -6,25 +6,125 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width=12, fig.height=8, fig.path='Figs/',
+                      echo=TRUE, warning=FALSE, message=FALSE)
 ```
 
-## R Markdown
-
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
+```{r, echo=FALSE, results="hide"}
+# Install/load packages
+packages <- c("caret", "ggplot2", "reshape2", "plyr", "randomForest", 
+              "gbm", "parallel", "doParallel")
+lapply(packages, require, character.only=TRUE)
 ```
 
-## Including Plots
+### Data Preparation
+####Load data
+```{r}
+test <- read.csv("./data/pml-testing.csv")
+train <- read.csv("./data/pml-training.csv")
 
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+#create a test partition from the train set
+set.seed(2618)
+inTrain <- createDataPartition(train$classe, p=.75)[[1]]
+training <- train[inTrain,]
+testing <- train[-inTrain,]
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+###Pre-processing
+Remove NAs
+```{r Pre-proc1, cache=TRUE}
+countNA <- sapply(training, function(y) sum(is.na(y)))
+noise <- c(grep(1,as.vector(countNA)))
+```
+
+Remove Columns 1:7
+```{r Pre-proc2, cache=TRUE}
+# col[1]: Unit ID - does not help predict classe
+# col[2,6:7]: makes the model too biased to the individual performing the task - our model should predict regardless of who's performing the activity without bias.
+# col[3:5]: Time is unrelated to the way the individuals perform since they were given specific instructions on how to perfrom each task.
+noise <- c(1:7, noise)
+```
+
+Remove Near Zero Variables - do this separately because using nzv inside train function ignores factor variables.
+```{r Pre-proc3, cache=TRUE}
+nzv <- nearZeroVar(training)
+noise <- unique(c(noise,nzv))
+```
+
+####Cross Validation
+Using repeated k-fold to increase accuracy
+```{r}
+# 10 folds, repeated 3 times
+ctrl <- trainControl(method="repeatedcv", number=10, repeats=3, allowParallel=TRUE)
+```
+
+```{r, echo=FALSE}
+#Multi-threading setup (use optimum number of cores that my PC can handle)
+cluster <- makeCluster(detectCores() - 3) #left 3 cores for PC's sake
+registerDoParallel(cluster)
+```
+
+### Model creation
+####Random Forest w/ PCA
+```{r RF1, cache=TRUE}
+set.seed(4006)
+(modRF1 <- train(classe ~., method="rf", data=training[,-noise], trControl=ctrl, 
+              preProcess=c("center", "scale", "pca")))
+```
+
+####Random Forest no PCA
+```{r RF2, cache=TRUE}
+set.seed(4006)
+(modRF2 <- train(classe ~., method="rf", data=training[,-noise], trControl=ctrl, 
+                             preProcess=c("center", "scale")))
+```
+
+####Boosting
+```{r GBM, cache=TRUE}
+set.seed(4006)
+(modGBM <- train(classe ~., method="gbm", data=training[,-noise], trControl=ctrl, 
+                preProcess=c("center", "scale"), verbose=FALSE))
+```
+
+```{r, echo=FALSE}
+#Stop multi-threading
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+###Results
+```{r Results, cache=TRUE}
+modResults <- resamples(list(RF1=modRF1,RF2=modRF2,GBM=modGBM))
+(modSummary <- rbind(modRF1=getTrainPerf(modRF1),modRF2=getTrainPerf(modRF2),
+                     modGBM=getTrainPerf(modGBM)))
+```
+
+Compare models
+```{r}
+scales <- list(x=list(relation="free"), y=list(relation="free"))
+bwplot(modResults, scales=scales)
+```
+
+Use the model with the highest accuracy: RF2 with 99.36%
+```{r}
+modRF2$finalModel
+```
+Estimated Out of sample error rate: `0.6%`
+
+Plot Variable Importance
+```{r}
+modRF2Imp <- varImp(modRF2, scale=F)
+plot(modRF2Imp, top = 20)
+```
+
+####Prediction Results (testing set)
+```{r}
+predRF2 <- predict(modRF2, newdata=testing)
+postResample(predRF2, testing$classe)
+confusionMatrix(predRF2, testing$classe)
+```
+
+####Quiz: Out of Sample Prediction Results (20 test cases)
+```{r}
+(pred20 <- predict(modRF2, newdata=test))
+```
