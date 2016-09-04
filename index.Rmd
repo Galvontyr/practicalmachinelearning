@@ -65,6 +65,9 @@ registerDoParallel(cluster)
 ```
 
 ### Model creation
+
+Trying out different models that would yield the best accuracy and compare them at the end.
+
 ####Random Forest w/ PCA
 ```{r RF1, cache=TRUE}
 set.seed(4006)
